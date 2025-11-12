@@ -1,0 +1,315 @@
+<!--
+Orthomosaic Web Viewer – Demo
+
+How to use this demo:
+1) Click "Upload GeoTIFF" and select a single-band or RGB GeoTIFF exported from DJI Terra.
+   - The viewer will parse the GeoTIFF client‑side and render it as a georeferenced layer.
+   - It will auto-zoom to the mosaic's extent.
+2) (Optional) Paste an XYZ tile URL (e.g., tiles you exported from Terra or MapTiler) and click "Add Tiles".
+   - Example XYZ pattern: https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png (OSM example)
+   - For Terra-exported web tiles, host the folder and paste the URL pattern to the /{z}/{x}/{y}.png path.
+3) Use the Draw tools to sketch lines/polygons. The panel shows length/area via Turf.js (meters/m² + ft/acres).
+4) Click the camera icon to export a quick PNG snapshot (viewport only).
+
+Notes:
+- This is a front-end demo (no server needed). You can deploy it to Netlify/GitHub Pages.
+- Libraries: Leaflet, Leaflet.Draw, Turf, geotiff.js, georaster, georaster-layer-for-leaflet.
+- Replace the LOGO text with your logo SVG/PNG and set your brand colors in :root.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Orthomosaic Viewer – Demo</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <style>
+    :root{
+      --bg:#0b1020; --panel:#131a2e; --muted:#93a1c8; --accent:#4cc9f0; --accent-2:#a1f0c4; --text:#e6e9f5;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    #app{display:grid;grid-template-columns:360px 1fr;height:100vh;}
+    .sidebar{background:var(--panel);border-right:1px solid rgba(255,255,255,.06);display:flex;flex-direction:column}
+    .brand{display:flex;align-items:center;gap:.75rem;padding:1rem 1.25rem;border-bottom:1px solid rgba(255,255,255,.06)}
+    .logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;font-weight:800;color:#0b1020}
+    .title{font-weight:700;font-size:1.05rem}
+    .controls{padding:1rem 1.25rem;display:grid;gap:.75rem}
+    .control{display:grid;gap:.35rem}
+    label{font-size:.8rem;color:var(--muted)}
+    input[type="text"],button{border:1px solid rgba(255,255,255,.12);background:#0f1528;color:var(--text);padding:.6rem .7rem;border-radius:.75rem;outline:none}
+    input[type="text"]:focus,button:focus{border-color:var(--accent)}
+    button{cursor:pointer}
+    .small{font-size:.8rem;color:var(--muted)}
+    .metrics{margin-top:.5rem;background:#0f1528;border:1px solid rgba(255,255,255,.1);border-radius:.75rem;padding:.6rem .75rem;max-height:30vh;overflow:auto}
+    .metrics h4{margin:.2rem 0 .4rem 0;font-size:.9rem}
+    .metrics p{margin:.15rem 0;font-size:.85rem}
+    .footer{margin-top:auto;padding:1rem 1.25rem;border-top:1px solid rgba(255,255,255,.06);font-size:.8rem;color:var(--muted)}
+    #map{height:100vh;width:100%;}
+    .toolbar{position:absolute;z-index:500;top:10px;right:12px;display:flex;gap:.4rem}
+    .iconbtn{border:1px solid rgba(255,255,255,.2);background:#0f1528;color:var(--text);padding:.45rem .55rem;border-radius:.6rem;cursor:pointer}
+    .iconbtn:hover{border-color:var(--accent)}
+    .leaflet-container{background:#0a0f1f}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img id="brandLogo" class="logo" alt="Logo" src="" style="width:36px;height:36px;border-radius:10px;object-fit:cover;box-shadow:0 0 0 2px rgba(0,0,0,.25)"/>
+        <div class="title">Client Portal • Orthomosaic Viewer</div>
+      </div>
+        <div class="title">Orthomosaic Viewer</div>
+      </div>
+      <div class="controls">
+        <!-- CLIENT PORTAL UI -->
+        <div class="control">
+          <label>Client / Project</label>
+          <select id="clientSelect"></select>
+          <button id="enterPortal">Open Project</button>
+          <div class="small">Select a client site to load its orthomosaic. You'll be prompted for a password.</div>
+        </div>
+
+        <div class="control">
+          <label>Upload Logo (optional)</label>
+          <input id="logoUpload" type="file" accept="image/*" />
+          <div class="small">Your logo is stored locally in the browser (no server). Replace anytime.</div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,.08);margin:.25rem 0 .75rem"/>
+
+        <div class="control">
+          <label>Upload GeoTIFF (from DJI Terra)</label>
+          <input id="geotiff" type="file" accept=".tif,.tiff" />
+          <div class="small">RGB or single-band. Rendered locally in your browser.</div>
+        </div>
+        <div class="control">
+          <label>XYZ Tiles URL</label>
+          <input id="xyz" type="text" placeholder="https://yourserver/tiles/{z}/{x}/{y}.png" />
+          <button id="addTiles">Add Tiles</button>
+          <div class="small">Use this for Terra web tiles or MapTiler/Mapbox (requires hosting). </div>
+        </div>
+        <div class="control">
+          <label>Base Map</label>
+          <button id="toggleBase">Toggle Satellite / Streets</button>
+        </div>
+        <div class="control">
+          <label>Draw & Measure</label>
+          <div class="small">Use the toolbar on the left side of the map to draw lines/polygons.</div>
+        </div>
+        <div class="metrics" id="metrics">
+          <h4>Measurements</h4>
+          <p>No shapes yet.</p>
+        </div>
+      </div>
+      <div class="footer">
+        © <span id="year"></span> Your Company • Private client viewer
+      </div>
+    </aside>
+    <main style="position:relative">
+      <div id="map"></div>
+      <div class="toolbar">
+        <button class="iconbtn" id="snapshot" title="Export PNG">📷 Snapshot</button>
+        <button class="iconbtn" id="clear" title="Clear drawings">🧹 Clear</button>
+      </div>
+
+      <!-- Password Modal -->
+      <div id="pwModal" style="position:absolute;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:600;">
+        <div style="background:#131a2e;border:1px solid rgba(255,255,255,.12);border-radius:1rem;min-width:320px;max-width:92vw;padding:1rem 1.25rem;box-shadow:0 12px 30px rgba(0,0,0,.4)">
+          <div style="font-weight:700;margin-bottom:.5rem">Enter Project Password</div>
+          <div id="pwProject" style="font-size:.85rem;color:#93a1c8;margin-bottom:.75rem"></div>
+          <input id="pwInput" type="password" placeholder="Password" style="width:100%;border:1px solid rgba(255,255,255,.15);background:#0f1528;color:#e6e9f5;border-radius:.6rem;padding:.55rem .6rem;outline:none"/>
+          <div style="display:flex;gap:.5rem;margin-top:.75rem;justify-content:flex-end">
+            <button id="pwCancel" class="iconbtn">Cancel</button>
+            <button id="pwOk" class="iconbtn">Enter</button>
+          </div>
+          <div id="pwError" style="color:#ff6b6b;font-size:.8rem;margin-top:.5rem;display:none">Incorrect password. Try again.</div>
+          <div class="small" style="margin-top:.5rem">Note: This is client-side gating for convenience. For real security, add HTTP auth or OAuth on your host.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
+  <script src="https://unpkg.com/georaster@1.6.4/dist/georaster.browser.min.js"></script>
+  <script src="https://unpkg.com/georaster-layer-for-leaflet@3.8.0/dist/georaster-layer-for-leaflet.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
+  <script src="https://unpkg.com/georaster@1.6.4/dist/georaster.browser.min.js"></script>
+  <script src="https://unpkg.com/georaster-layer-for-leaflet@3.8.0/dist/georaster-layer-for-leaflet.min.js"></script>
+  <script>
+    const yearEl = document.getElementById('year');
+    yearEl.textContent = new Date().getFullYear();
+
+    // ---- CLIENT CONFIG (edit these) ----
+    const CLIENTS = [
+      { id: 'clientA_site1', name: 'Client A – Site 1', password: 'ScoutA1', tilesUrl: '', center: [33.689,-78.886], zoom: 14 },
+      { id: 'clientB_site2', name: 'Client B – Site 2', password: 'ScoutB2', tilesUrl: '', center: [33.86,-78.55], zoom: 14 }
+    ];
+
+    // Populate client select
+    const selectEl = document.getElementById('clientSelect');
+    CLIENTS.forEach(c=>{ const o = document.createElement('option'); o.value=c.id; o.textContent=c.name; selectEl.appendChild(o); });
+
+    // Simple password modal logic
+    const pwModal = document.getElementById('pwModal');
+    const pwInput = document.getElementById('pwInput');
+    const pwError = document.getElementById('pwError');
+    const pwProject = document.getElementById('pwProject');
+    let pendingClient = null;
+
+    document.getElementById('enterPortal').addEventListener('click', ()=>{
+      const id = selectEl.value; pendingClient = CLIENTS.find(c=>c.id===id);
+      pwProject.textContent = pendingClient?.name || '';
+      pwInput.value=''; pwError.style.display='none';
+      pwModal.style.display='flex'; pwInput.focus();
+    });
+    document.getElementById('pwCancel').addEventListener('click', ()=>{ pwModal.style.display='none'; });
+    document.getElementById('pwOk').addEventListener('click', ()=>{
+      if (!pendingClient) return;
+      if (pwInput.value === pendingClient.password){ pwModal.style.display='none'; loadClient(pendingClient); }
+      else { pwError.style.display='block'; pwInput.focus(); }
+    });
+
+    function loadClient(client){
+      // Center map and add tiles if configured
+      if (client.center) map.setView(client.center, client.zoom||15);
+      if (client.tilesUrl){ const lyr = L.tileLayer(client.tilesUrl, { maxZoom: 24, opacity: 0.95 }); lyr.addTo(map); }
+    }
+
+    // Map init
+    const map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([33.689, -78.886], 12);
+
+    // Base layers
+    const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 22, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    const satellite = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 22, attribution: 'Esri World Imagery' });
+    let baseIsStreets = true;
+    document.getElementById('toggleBase').addEventListener('click', () => {
+      if (baseIsStreets) { map.removeLayer(streets); satellite.addTo(map); } else { map.removeLayer(satellite); streets.addTo(map);} 
+      baseIsStreets = !baseIsStreets;
+    });
+
+    // Draw controls
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+    const drawControl = new L.Control.Draw({
+      edit: { featureGroup: drawnItems },
+      draw: {
+        marker: true,
+        polyline: { shapeOptions: { color: '#4cc9f0' } },
+        polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: '#a1f0c4' } },
+        rectangle: false, circle: false, circlemarker: false
+      }
+    });
+    map.addControl(drawControl);
+
+    const metricsEl = document.getElementById('metrics');
+    function fmt(n, d=2){ return Number(n).toLocaleString(undefined,{maximumFractionDigits:d}); }
+    function updateMetrics(){
+      const lines = [], polys = [];
+      drawnItems.eachLayer(l => {
+        if (l instanceof L.Polyline && !(l instanceof L.Polygon)) {
+          const coords = l.getLatLngs().map(ll => [ll.lng, ll.lat]);
+          const lenM = turf.length(turf.lineString(coords), {units:'kilometers'}) * 1000;
+          lines.push({m: lenM, ft: lenM*3.28084});
+        }
+        if (l instanceof L.Polygon){
+          const rings = l.getLatLngs()[0].map(ll => [ll.lng, ll.lat]);
+          const areaM2 = turf.area(turf.polygon([[...rings, rings[0]]]));
+          polys.push({m2: areaM2, ac: areaM2*0.000247105});
+        }
+      });
+      let html = '<h4>Measurements</h4>';
+      if (!lines.length && !polys.length){ html += '<p>No shapes yet.</p>'; }
+      lines.forEach((ln,i)=>{ html += `<p>Line ${i+1}: <strong>${fmt(ln.m)} m</strong> (${fmt(ln.ft)} ft)</p>`; });
+      polys.forEach((pg,i)=>{ html += `<p>Polygon ${i+1}: <strong>${fmt(pg.m2)} m²</strong> (${fmt(pg.ac)} acres)</p>`; });
+      metricsEl.innerHTML = html;
+    }
+    map.on(L.Draw.Event.CREATED, e => { drawnItems.addLayer(e.layer); updateMetrics(); });
+    map.on(L.Draw.Event.EDITED, updateMetrics);
+    map.on(L.Draw.Event.DELETED, updateMetrics);
+
+    document.getElementById('clear').addEventListener('click', ()=>{ drawnItems.clearLayers(); updateMetrics(); });
+
+    // Add XYZ tiles as overlay
+    document.getElementById('addTiles').addEventListener('click', ()=>{
+      const url = document.getElementById('xyz').value.trim();
+      if (!url) { alert('Paste an XYZ URL pattern first.'); return; }
+      const xyz = L.tileLayer(url, { maxZoom: 24, opacity: 0.9 });
+      xyz.addTo(map);
+    });
+
+    // GeoTIFF upload handling
+    const input = document.getElementById('geotiff');
+    let currentRasterLayer = null;
+    input.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if(!file) return;
+      const arr = await file.arrayBuffer();
+      const tiff = await GeoTIFF.fromArrayBuffer(arr);
+      const image = await tiff.getImage();
+      const raster = await parseGeoraster(arr);
+      // Build georaster layer
+      if (currentRasterLayer) { map.removeLayer(currentRasterLayer); }
+      const layer = new GeoRasterLayer({
+        georaster: raster,
+        opacity: 1.0,
+        pixelValuesToColorFn: values => {
+          if (!values) return null;
+          if (values.length >= 3) {
+            const r = values[0], g = values[1], b = values[2];
+            return `rgb(${r},${g},${b})`;
+          } else {
+            const v = values[0]; return `rgb(${v},${v},${v})`;
+          }
+        }
+      });
+      layer.addTo(map);
+      currentRasterLayer = layer;
+      try { map.fitBounds(layer.getBounds()); } catch(err) { console.warn(err); }
+    });
+
+    // Snapshot export (viewport only)
+    document.getElementById('snapshot').addEventListener('click', async () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const rect = map.getContainer().getBoundingClientRect();
+        canvas.width = rect.width; canvas.height = rect.height;
+        const ctx = canvas.getContext('2d');
+        const tiles = map._panes.overlayPane.querySelectorAll('img, canvas');
+        for (const t of tiles){
+          if (t.tagName.toLowerCase()==='img'){
+            if (!t.complete) continue;
+            ctx.drawImage(t, t.x || 0, t.y || 0);
+          }
+          if (t.tagName.toLowerCase()==='canvas'){
+            ctx.drawImage(t, 0, 0);
+          }
+        }
+        const data = canvas.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.href = data; a.download = 'map_snapshot.png'; a.click();
+      } catch(err){
+        alert('Snapshot blocked by cross-origin tiles. Host your tiles with CORS enabled or use same-origin assets.');
+      }
+    });
+
+    // ---- Logo handling (stores in localStorage) ----
+    const logoEl = document.getElementById('brandLogo');
+    const savedLogo = localStorage.getItem('portalLogoDataUri');
+    if (savedLogo) { logoEl.src = savedLogo; } else { logoEl.style.background = 'linear-gradient(135deg,#4cc9f0,#a1f0c4)'; }
+
+    document.getElementById('logoUpload').addEventListener('change', (e)=>{
+      const file = e.target.files?.[0]; if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ()=>{ const uri = reader.result; localStorage.setItem('portalLogoDataUri', uri); logoEl.src = uri; };
+      reader.readAsDataURL(file);
+    });
+  </script>
+</body>
+</html>
